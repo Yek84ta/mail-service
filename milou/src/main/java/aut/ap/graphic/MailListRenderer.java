@@ -57,7 +57,8 @@ public class MailListRenderer extends JPanel implements ListCellRenderer<MailDto
         senderLabel.setText("From: " + mailDto.getSenderName());
         dateLabel.setText(mailDto.getSentDate().toString());
 
-        if (!(mailDto.isRead())) {
+        // Use the isRead flag from MailDto directly
+        if (!mailDto.isRead()) {
             statusLabel.setText("[NEW]");
             statusLabel.setForeground(new Color(0, 128, 0)); // Green for new
             subjectLabel.setFont(subjectLabel.getFont().deriveFont(Font.BOLD));
@@ -81,6 +82,5 @@ public class MailListRenderer extends JPanel implements ListCellRenderer<MailDto
 
         return this;
     }
-
 
 }

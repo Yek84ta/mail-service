@@ -452,9 +452,22 @@ public class Application extends JFrame {
                                 currentUser,
                                 session
                         );
-                        fullMail.ifPresent(mail -> showMailContent(mail));
+                        if (fullMail.isPresent()) {
+                            showMailContent(fullMail.get());
+                        } else {
+                            JOptionPane.showMessageDialog(Application.this,
+                                    "Mail not found",
+                                    "Error", JOptionPane.ERROR_MESSAGE);
+                        }
+                    } catch (SecurityException se) {
+                        JOptionPane.showMessageDialog(Application.this,
+                                se.getMessage(),
+                                "Access Denied", JOptionPane.ERROR_MESSAGE);
                     } catch (Exception ex) {
                         logger.log(Level.SEVERE, "Error loading mail details", ex);
+                        JOptionPane.showMessageDialog(Application.this,
+                                "Error loading mail: " + ex.getMessage(),
+                                "Error", JOptionPane.ERROR_MESSAGE);
                     }
                 }
             }
@@ -629,7 +642,7 @@ public class Application extends JFrame {
         JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
 
         // Reply button (only for recipients)
-        if (mail.getRecipients().contains(currentUser)) {
+        if (mail.getRecipients().stream().anyMatch(r -> r.getId() == currentUser.getId())) {
             JButton replyButton = new JButton("Reply");
             replyButton.addActionListener(e -> showReplyScreen(mail));
             buttonPanel.add(replyButton);
@@ -749,7 +762,7 @@ public class Application extends JFrame {
                 "Subject: " + originalMail.getSubject() + "\n\n" +
                 originalMail.getBody());
         bodyArea.setLineWrap(true);
-        bodyArea.setEditable(false);
+        bodyArea.setEditable(true);
         JScrollPane bodyScroll = new JScrollPane(bodyArea);
         formPanel.add(bodyScroll, gbc);
 
@@ -827,7 +840,7 @@ public class Application extends JFrame {
                 "Subject: " + originalMail.getSubject() + "\n\n" +
                 originalMail.getBody());
         bodyArea.setLineWrap(true);
-        bodyArea.setEditable(false);
+        bodyArea.setEditable(true);
         JScrollPane bodyScroll = new JScrollPane(bodyArea);
         formPanel.add(bodyScroll, gbc);
 
