@@ -1,0 +1,292 @@
+package aut.ap.mail;
+
+import aut.ap.user.User;
+import aut.ap.util.HibernateUtil;
+import org.hibernate.Session;
+import org.hibernate.Transaction;
+
+import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.logging.Level;
+import java.util.logging.Logger;
+import java.util.stream.Collectors;
+
+public class MailService {
+    private final MailRepository mailRepository;
+    private User currentUser;
+    private static final Logger logger = Logger.getLogger(MailService.class.getName());
+
+    public MailService() {
+        this.mailRepository = new MailRepository();
+    }
+
+    public void setCurrentUser(User currentUser) {
+        this.currentUser = currentUser;
+    }
+
+    public Mail sendMail(User sender, List<User> recipients, String subject, String body, Session session) {
+        MailValidation.validateSubject(subject);
+        MailValidation.validateBody(body);
+        MailValidation.validateRecipients(recipients);
+        MailValidation.validateNotSendingToSelf(sender, recipients);
+
+        Transaction tx = session.beginTransaction();
+        try {
+            Mail mail = new Mail(
+                    generateUniqueCode(),
+                    sender,
+                    recipients,
+                    subject,
+                    body,
+                    LocalDateTime.now()
+            );
+
+            // First persist the mail to get an ID
+            session.persist(mail);
+            session.flush(); // Ensure mail gets an ID
+
+            // Then add recipients with proper checks
+            for (User recipient : recipients) {
+                // Check if this recipient already exists for this mail
+                boolean exists = session.createQuery(
+                                "SELECT COUNT(mr) > 0 FROM MailRecipient mr " +
+                                        "WHERE mr.mail = :mail AND mr.recipient = :recipient", Boolean.class)
+                        .setParameter("mail", mail)
+                        .setParameter("recipient", recipient)
+                        .uniqueResult();
+
+                if (!exists) {
+                    mail.addRecipient(recipient);
+                }
+            }
+
+            tx.commit();
+            return mail;
+        } catch (Exception e) {
+            if (tx != null) tx.rollback();
+            throw new RuntimeException("Failed to send mail", e);
+        }
+    }
+
+    public Optional<Mail> getMailByCode(String code, User currentUser, Session session) {
+        try {
+            Optional<Mail> mailOpt = mailRepository.findByCode(code, session);
+            if (mailOpt.isEmpty()) {
+                return Optional.empty();
+            }
+
+            Mail mail = mailOpt.get();
+
+            // Compare by ID instead of object equality
+            boolean isSender = (mail.getSender().getId()) == (currentUser.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() ==currentUser.getId());
+
+            if (!isSender && !isRecipient) {
+                throw new SecurityException("You don't have permission to access this mail.");
+            }
+
+            // Mark as read if recipient and not already read
+            if (isRecipient && !isMailRead(mail.getId(), currentUser.getId(), session)) {
+                markAsRead(mail.getId(), currentUser.getId(), session);
+            }
+
+            return Optional.of(mail);
+        } catch (Exception e) {
+            throw new RuntimeException("Error getting mail by code", e);
+        }
+    }
+
+    public List<MailDto> getInboxDtos(User user, Session session) {
+        try {
+            return mailRepository.findInboxForUser(user, session).stream()
+                    .map(mail -> convertToDto(mail, session))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new RuntimeException("Error getting inbox", e);
+        }
+    }
+
+    public List<MailDto> getSentMailDtos(User user, Session session) {
+        try {
+            return mailRepository.findSentForUser(user, session).stream()
+                    .map(mail -> convertToDto(mail, session))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new RuntimeException("Error getting sent mails", e);
+        }
+    }
+
+    public List<MailDto> getUnreadMailDtos(User user, Session session) {
+        try {
+            return mailRepository.findUnreadForUser(user, session).stream()
+                    .map(mail -> convertToDto(mail, session))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new RuntimeException("Error getting unread mails", e);
+        }
+    }
+
+    public List<MailDto> getTrashMailDtos(User user, Session session) {
+        try {
+            return mailRepository.findTrashForUser(user, session).stream()
+                    .map(mail -> convertToDto(mail, session))
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            throw new RuntimeException("Error getting trash mails", e);
+        }
+    }
+
+    public boolean isMailRead(int mailId, int userId, Session session) {
+        try {
+            return mailRepository.isMailRead(mailId, userId, session);
+        } catch (Exception e) {
+            throw new RuntimeException("Error checking mail read status", e);
+        }
+    }
+
+    public void markAsRead(int mailId, int userId, Session session) {
+        Transaction tx = session.beginTransaction();
+        try {
+            mailRepository.markAsRead(mailId, userId, session);
+            tx.commit();
+        } catch (Exception e) {
+            if (tx != null) tx.rollback();
+            throw new RuntimeException("Error marking mail as read", e);
+        }
+    }
+
+    public Mail replyToMail(Mail originalMail, User replier, String replyBody, Session session) {
+        String newSubject = originalMail.getSubject().startsWith("Re:") ?
+                originalMail.getSubject() : "Re: " + originalMail.getSubject();
+
+        List<User> recipients = new ArrayList<>();
+        recipients.add(originalMail.getSender());
+        for (User recipient : originalMail.getRecipients()) {
+            if (!recipient.equals(replier)) {
+                recipients.add(recipient);
+            }
+        }
+
+        return sendMail(replier, recipients, newSubject, replyBody, session);
+    }
+
+    public Mail forwardMail(Mail originalMail, User sender, List<User> recipients, Session session) {
+        String newSubject = originalMail.getSubject().startsWith("Fw:") ?
+                originalMail.getSubject() : "Fw: " + originalMail.getSubject();
+
+        String body = "\n\n---------- Forwarded Message ----------\n" +
+                "From: " + originalMail.getSender().getName() + " <" + originalMail.getSender().getEmail() + ">\n" +
+                "Date: " + originalMail.getSentDate() + "\n" +
+                "Subject: " + originalMail.getSubject() + "\n\n" +
+                originalMail.getBody();
+
+        return sendMail(sender, recipients, newSubject, body, session);
+    }
+
+    public void moveToTrash(int mailId, User user, Session session) {
+        try {
+            // Check if transaction is active
+            boolean transactionOwner = !session.getTransaction().isActive();
+            if (transactionOwner) {
+                session.beginTransaction();
+            }
+
+            Optional<Mail> mailOpt = mailRepository.findById(mailId, session);
+            if (mailOpt.isEmpty()) {
+                throw new IllegalArgumentException("Mail not found.");
+            }
+
+            Mail mail = mailOpt.get();
+
+            // More permissive check - either sender or recipient can delete
+            boolean isSender = (mail.getSender().getId()) == (user.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() == (user.getId()));
+
+            if (!isSender && !isRecipient) {
+                throw new SecurityException("You don't have permission to move this mail to trash.");
+            }
+
+            mailRepository.moveToTrash(mailId, user.getId(), session);
+
+            if (transactionOwner) {
+                session.getTransaction().commit();
+            }
+        } catch (Exception e) {
+            if (session.getTransaction().isActive()) {
+                session.getTransaction().rollback();
+            }
+            throw new RuntimeException("Error moving mail to trash", e);
+        }
+    }
+
+    public void restoreFromTrash(int mailId, User user, Session session) {
+        boolean transactionOwner = !session.getTransaction().isActive();
+        try {
+            if (transactionOwner) {
+                session.beginTransaction();
+            }
+
+            Optional<Mail> mailOpt = mailRepository.findById(mailId, session);
+            if (mailOpt.isEmpty()) {
+                throw new IllegalArgumentException("Mail not found.");
+            }
+
+            Mail mail = mailOpt.get();
+
+            // Check permissions - either sender or recipient can restore
+            boolean isSender = (mail.getSender().getId()) == (user.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() == (user.getId()));
+
+            if (!isSender && !isRecipient) {
+                throw new SecurityException("You don't have permission to restore this mail.");
+            }
+
+            // Modified to not start its own transaction
+            mail.setDeleted(false);
+            mail.setDeletedAt(null);
+            mail.setDeletedById(null);
+            session.merge(mail);
+
+            if (transactionOwner) {
+                session.getTransaction().commit();
+            }
+        } catch (Exception e) {
+            if (transactionOwner && session.getTransaction().isActive()) {
+                session.getTransaction().rollback();
+            }
+            throw new RuntimeException("Error restoring mail from trash", e);
+        }
+    }
+
+    private MailDto convertToDto(Mail mail, Session session) {
+        boolean isRead = true; // Default to true for sent mails
+
+        if (currentUser != null) {
+            // For inbox mails (where currentUser is a recipient)
+            if (mail.getRecipients().contains(currentUser)) {
+                isRead = mailRepository.isMailRead(mail.getId(), currentUser.getId(), session);
+            }
+        }
+
+        return MailDto.builder()
+                .id(mail.getId())
+                .code(mail.getCode())
+                .subject(mail.getSubject())
+                .senderName(mail.getSender().getName())
+                .senderEmail(mail.getSender().getEmail())
+                .sentDate(mail.getSentDate())
+                .isRead(isRead)
+                .isDeleted(mail.isDeleted())
+                .build();
+    }
+
+    private String generateUniqueCode() {
+        return UUID.randomUUID().toString().substring(0, 8);
+    }
+}
