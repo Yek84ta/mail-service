@@ -31,5 +31,6 @@
         <!-- Mappings -->
         <mapping class="aut.ap.user.User"/>
         <mapping class="aut.ap.mail.Mail"/>
+        <mapping class="aut.ap.mail.MailRecipient"/>
     </session-factory>
 </hibernate-configuration>
