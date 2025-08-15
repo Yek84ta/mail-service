@@ -1,5 +1,8 @@
 package aut.ap.mail;
 
+import org.hibernate.Session;
+
+import java.awt.*;
 import java.time.LocalDateTime;
 import java.util.Objects;
 
@@ -13,8 +16,6 @@ public class MailDto {
     private boolean isRead;
     private boolean isDeleted;
 
-
-    // Private constructor for builder
     private MailDto(Builder builder) {
         this.id = builder.id;
         this.code = builder.code;
@@ -24,9 +25,9 @@ public class MailDto {
         this.sentDate = builder.sentDate;
         this.isRead = builder.isRead;
         this.isDeleted = builder.isDeleted;
+
     }
 
-    // Getters
     public int getId() { return id; }
     public String getCode() { return code; }
     public String getSubject() { return subject; }
@@ -70,7 +71,6 @@ public class MailDto {
                 '}';
     }
 
-    // Builder pattern
     public static Builder builder() {
         return new Builder();
     }
@@ -131,7 +131,15 @@ public class MailDto {
             return new MailDto(this);
         }
 
+        public void checkRead(int mailId, int userId, Session session) {
+            isRead = session.createNativeQuery(
+                            "SELECT is_read FROM mail_recipients " +
+                                    "WHERE mail_id = :mailId AND recipient_id = :userId", Boolean.class)
+                    .setParameter("mailId", mailId)
+                    .setParameter("userId", userId)
+                    .uniqueResult();
 
+        }
 
     }
 }

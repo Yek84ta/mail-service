@@ -40,10 +40,9 @@ public class MailRepository {
     }
 
     public void markAsRead(int mailId, int userId, Session session) {
-        session.createNativeQuery(
-                        "INSERT INTO mail_recipients (mail_id, recipient_id, is_read) " +
-                                "VALUES (:mailId, :userId, true) " +
-                                "ON DUPLICATE KEY UPDATE is_read = true")
+        session.createQuery(
+                        "UPDATE MailRecipient mr SET mr.isRead = true " +
+                                "WHERE mr.mail.id = :mailId AND mr.recipient.id = :userId")
                 .setParameter("mailId", mailId)
                 .setParameter("userId", userId)
                 .executeUpdate();
@@ -51,14 +50,12 @@ public class MailRepository {
 
     public boolean isMailRead(int mailId, int userId, Session session) {
         try {
-            Boolean isRead = session.createNativeQuery(
-                            "SELECT is_read FROM mail_recipients " +
-                                    "WHERE mail_id = :mailId AND recipient_id = :userId", Boolean.class)
+            return session.createQuery(
+                            "SELECT mr.isRead FROM MailRecipient mr " +
+                                    "WHERE mr.mail.id = :mailId AND mr.recipient.id = :userId", Boolean.class)
                     .setParameter("mailId", mailId)
                     .setParameter("userId", userId)
                     .uniqueResult();
-
-            return isRead;
         } catch (NoResultException e) {
             return false;
         }
@@ -66,8 +63,29 @@ public class MailRepository {
 
     public List<Mail> findInboxForUser(User user, Session session) {
         return session.createQuery(
-                        "SELECT DISTINCT m FROM Mail m JOIN m.recipients r " +
-                                "WHERE r = :user AND m.isDeleted = false ORDER BY m.sentDate DESC", Mail.class)
+                        "SELECT DISTINCT mr.mail FROM MailRecipient mr " +
+                                "WHERE mr.recipient = :user AND mr.mail.isDeleted = false " +
+                                "ORDER BY mr.mail.sentDate DESC", Mail.class)
+                .setParameter("user", user)
+                .getResultList();
+    }
+
+    public List<Mail> findTrashForUser(User user, Session session) {
+        return session.createQuery(
+                        "SELECT DISTINCT mr.mail FROM MailRecipient mr " +
+                                "WHERE (mr.recipient = :user AND mr.isDeleted = true) " +
+                                "OR (mr.mail.sender = :user AND mr.mail.isDeleted = true) " +
+                                "ORDER BY mr.mail.deletedAt DESC", Mail.class)
+                .setParameter("user", user)
+                .getResultList();
+    }
+
+    public List<Mail> findUnreadForUser(User user, Session session) {
+        return session.createQuery(
+                        "SELECT DISTINCT mr.mail FROM MailRecipient mr " +
+                                "WHERE mr.recipient = :user AND mr.isRead = false " +
+                                "AND mr.mail.isDeleted = false " +
+                                "ORDER BY mr.mail.sentDate DESC", Mail.class)
                 .setParameter("user", user)
                 .getResultList();
     }
@@ -79,21 +97,9 @@ public class MailRepository {
                 .getResultList();
     }
 
-    public List<Mail> findUnreadForUser(User user, Session session) {
-        return session.createQuery(
-                        "SELECT DISTINCT m FROM Mail m JOIN m.recipients r " +
-                                "WHERE r = :user AND m.isDeleted = false AND " +
-                                "NOT EXISTS (SELECT 1 FROM mail_recipients mr WHERE mr.mail_id = m.id AND " +
-                                "mr.recipient_id = :userId AND mr.is_read = true) " +
-                                "ORDER BY m.sentDate DESC", Mail.class)
-                .setParameter("user", user)
-                .setParameter("userId", user.getId())
-                .getResultList();
-    }
 
     public void moveToTrash(int mailId, int userId, Session session) {
         try {
-            // Check if recipient exists
             Boolean isRecipient = session.createNativeQuery(
                             "SELECT 1 FROM mail_recipients " +
                                     "WHERE mail_id = :mailId AND recipient_id = :userId", Boolean.class)
@@ -102,7 +108,6 @@ public class MailRepository {
                     .uniqueResult();
 
             if (isRecipient != null) {
-                // Update recipient's deletion status
                 session.createNativeQuery(
                                 "UPDATE mail_recipients SET is_deleted = true, deleted_at = NOW() " +
                                         "WHERE mail_id = :mailId AND recipient_id = :userId")
@@ -111,7 +116,6 @@ public class MailRepository {
                         .executeUpdate();
             }
 
-            // Check if sender
             Boolean isSender = session.createNativeQuery(
                             "SELECT 1 FROM mails " +
                                     "WHERE id = :mailId AND sender_id = :userId", Boolean.class)
@@ -120,15 +124,14 @@ public class MailRepository {
                     .uniqueResult();
 
             if (isSender != null) {
-                // Update sender's deletion status
                 session.createNativeQuery(
-                                "UPDATE mails SET is_deleted_by_sender = true, sender_deleted_at = NOW() " +
+                                "UPDATE mails SET is_deleted = true, deleted_at = NOW(), deleted_by_id = :userId " +
                                         "WHERE id = :mailId")
                         .setParameter("mailId", mailId)
+                        .setParameter("userId", userId)
                         .executeUpdate();
             }
 
-            // Flush changes immediately
             session.flush();
         } catch (Exception e) {
             throw new RuntimeException("Repository error moving to trash", e);
@@ -136,31 +139,14 @@ public class MailRepository {
     }
 
     public void restoreFromTrash(int mailId, Session session) {
-        Transaction tx = null;
-        try {
-            tx = session.beginTransaction();
-            Mail mail = session.get(Mail.class, mailId);
-            if (mail != null) {
-                mail.setDeleted(false);
-                mail.setDeletedAt(null);
-                mail.setDeletedById(null);
-                session.persist(mail);
-            }
-            tx.commit();
-        } catch (Exception e) {
-            if (tx != null) tx.rollback();
-            throw e;
+        Mail mail = session.get(Mail.class, mailId);
+        if (mail != null) {
+            mail.setDeleted(false);
+            mail.setDeletedAt(null);
+            mail.setDeletedById(null);
         }
     }
 
-    public List<Mail> findTrashForUser(User user, Session session) {
-        return session.createQuery(
-                        "FROM Mail m WHERE m.isDeleted = true AND " +
-                                "(m.sender = :user OR :user MEMBER OF m.recipients) " +
-                                "ORDER BY m.deletedAt DESC", Mail.class)
-                .setParameter("user", user)
-                .getResultList();
-    }
 
     public Optional<String> getMailCodeById(int mailId, Session session) {
         return Optional.ofNullable(

@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 @Entity
 @Table(name = "mails")
@@ -22,13 +23,8 @@ public class Mail {
     @JoinColumn(name = "sender_id", nullable = false)
     private User sender;
 
-    @ManyToMany(fetch = FetchType.LAZY)
-    @JoinTable(
-            name = "mail_recipients",
-            joinColumns = @JoinColumn(name = "mail_id"),
-            inverseJoinColumns = @JoinColumn(name = "recipient_id")
-    )
-    private List<User> recipients = new ArrayList<>();
+    @OneToMany(mappedBy = "mail", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<MailRecipient> mailRecipients = new ArrayList<>();
 
     @Column(name = "subject", nullable = false, length = 255)
     private String subject;
@@ -51,22 +47,25 @@ public class Mail {
     @Transient
     private Boolean readForCurrentUser;
 
-    // Constructors
+
     protected Mail() {
-        // Required by JPA
     }
 
     public Mail(String code, User sender, List<User> recipients,
                 String subject, String body, LocalDateTime sentDate) {
         this.code = validateCode(code);
         this.sender = validateSender(sender);
-        this.recipients = validateRecipients(recipients);
         this.subject = validateSubject(subject);
         this.body = validateBody(body);
         this.sentDate = validateSentDate(sentDate);
+
+        this.mailRecipients = new ArrayList<>();
+
+        for (User recipient : validateRecipients(recipients)) {
+            this.addRecipient(recipient);
+        }
     }
 
-    // Validation methods
     private String validateCode(String code) {
         return Objects.requireNonNull(code, "Code cannot be null");
     }
@@ -92,7 +91,6 @@ public class Mail {
         return Objects.requireNonNull(sentDate, "Sent date cannot be null");
     }
 
-    // Getters
     public Integer getId() {
         return id;
     }
@@ -106,7 +104,9 @@ public class Mail {
     }
 
     public List<User> getRecipients() {
-        return Collections.unmodifiableList(recipients);
+        return mailRecipients.stream()
+                .map(MailRecipient::getRecipient)
+                .collect(Collectors.toList());
     }
 
     public String getSubject() {
@@ -133,13 +133,8 @@ public class Mail {
         return deletedById;
     }
 
-    // Setters
     public void setSender(User sender) {
         this.sender = validateSender(sender);
-    }
-
-    public void setRecipients(List<User> recipients) {
-        this.recipients = validateRecipients(recipients);
     }
 
     public void setSubject(String subject) {
@@ -167,20 +162,12 @@ public class Mail {
         this.deletedById = deletedById;
     }
 
-    // Business methods
-    public void markAsDeleted(Integer deletedById) {
-        this.isDeleted = true;
-        this.deletedAt = LocalDateTime.now();
-        this.deletedById = deletedById;
+    public void addRecipient(User recipient) {
+        MailRecipient mailRecipient = new MailRecipient(this, recipient);
+        mailRecipients.add(mailRecipient);
     }
 
-    public void restoreFromTrash() {
-        this.isDeleted = false;
-        this.deletedAt = null;
-        this.deletedById = null;
-    }
 
-    // Equals, hashCode, toString
     @Override
     public boolean equals(Object o) {
         if (this == o) return true;

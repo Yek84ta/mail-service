@@ -45,6 +45,21 @@ public class MailService {
             );
 
             session.persist(mail);
+            session.flush();
+
+            for (User recipient : recipients) {
+                boolean exists = session.createQuery(
+                                "SELECT COUNT(mr) > 0 FROM MailRecipient mr " +
+                                        "WHERE mr.mail = :mail AND mr.recipient = :recipient", Boolean.class)
+                        .setParameter("mail", mail)
+                        .setParameter("recipient", recipient)
+                        .uniqueResult();
+
+                if (!exists) {
+                    mail.addRecipient(recipient);
+                }
+            }
+
             tx.commit();
             return mail;
         } catch (Exception e) {
@@ -61,15 +76,17 @@ public class MailService {
             }
 
             Mail mail = mailOpt.get();
-            if (!mail.getSender().equals(currentUser) && !mail.getRecipients().contains(currentUser)) {
+
+            boolean isSender = (mail.getSender().getId()) == (currentUser.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() ==currentUser.getId());
+
+            if (!isSender && !isRecipient) {
                 throw new SecurityException("You don't have permission to access this mail.");
             }
 
-            // Mark as read if recipient and not already read
-            if (mail.getRecipients().contains(currentUser)){
-                if (!isMailRead(mail.getId(), currentUser.getId(), session)) {
-                    markAsRead(mail.getId(), currentUser.getId(), session);
-                }
+            if (isRecipient && !isMailRead(mail.getId(), currentUser.getId(), session)) {
+                markAsRead(mail.getId(), currentUser.getId(), session);
             }
 
             return Optional.of(mail);
@@ -138,16 +155,23 @@ public class MailService {
     }
 
     public Mail replyToMail(Mail originalMail, User replier, String replyBody, Session session) {
+        originalMail = session.merge(originalMail);
+
         String newSubject = originalMail.getSubject().startsWith("Re:") ?
                 originalMail.getSubject() : "Re: " + originalMail.getSubject();
 
         List<User> recipients = new ArrayList<>();
-        recipients.add(originalMail.getSender());
+
+        User sender = session.merge(originalMail.getSender());
+        recipients.add(sender);
+
         for (User recipient : originalMail.getRecipients()) {
             if (!recipient.equals(replier)) {
-                recipients.add(recipient);
+                recipients.add(session.merge(recipient));
             }
         }
+
+        replier = session.merge(replier);
 
         return sendMail(replier, recipients, newSubject, replyBody, session);
     }
@@ -167,11 +191,9 @@ public class MailService {
 
     public void moveToTrash(int mailId, User user, Session session) {
         try {
-            // Check if transaction is active
-            boolean transactionOwner = false;
-            if (!session.getTransaction().isActive()) {
+            boolean transactionOwner = !session.getTransaction().isActive();
+            if (transactionOwner) {
                 session.beginTransaction();
-                transactionOwner = true;
             }
 
             Optional<Mail> mailOpt = mailRepository.findById(mailId, session);
@@ -180,7 +202,12 @@ public class MailService {
             }
 
             Mail mail = mailOpt.get();
-            if (!mail.getSender().equals(user) && !mail.getRecipients().contains(user)) {
+
+            boolean isSender = (mail.getSender().getId()) == (user.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() == (user.getId()));
+
+            if (!isSender && !isRecipient) {
                 throw new SecurityException("You don't have permission to move this mail to trash.");
             }
 
@@ -198,30 +225,50 @@ public class MailService {
     }
 
     public void restoreFromTrash(int mailId, User user, Session session) {
-        Transaction tx = session.beginTransaction();
+        boolean transactionOwner = !session.getTransaction().isActive();
         try {
+            if (transactionOwner) {
+                session.beginTransaction();
+            }
+
             Optional<Mail> mailOpt = mailRepository.findById(mailId, session);
             if (mailOpt.isEmpty()) {
                 throw new IllegalArgumentException("Mail not found.");
             }
 
             Mail mail = mailOpt.get();
-            if (!mail.getSender().equals(user) && !mail.getRecipients().contains(user)) {
+
+            boolean isSender = (mail.getSender().getId()) == (user.getId());
+            boolean isRecipient = mail.getRecipients().stream()
+                    .anyMatch(r -> r.getId() == (user.getId()));
+
+            if (!isSender && !isRecipient) {
                 throw new SecurityException("You don't have permission to restore this mail.");
             }
 
-            mailRepository.restoreFromTrash(mailId, session);
-            tx.commit();
+            mail.setDeleted(false);
+            mail.setDeletedAt(null);
+            mail.setDeletedById(null);
+            session.merge(mail);
+
+            if (transactionOwner) {
+                session.getTransaction().commit();
+            }
         } catch (Exception e) {
-            if (tx != null) tx.rollback();
+            if (transactionOwner && session.getTransaction().isActive()) {
+                session.getTransaction().rollback();
+            }
             throw new RuntimeException("Error restoring mail from trash", e);
         }
     }
 
     private MailDto convertToDto(Mail mail, Session session) {
-        boolean isRead = false;
-        if (currentUser != null && mail.getRecipients().contains(currentUser)) {
-            isRead =isMailRead(mail.getId(), currentUser.getId(), session);
+        boolean isRead = true; // Default to true for sent mails
+
+        if (currentUser != null) {
+            if (mail.getRecipients().contains(currentUser)) {
+                isRead = mailRepository.isMailRead(mail.getId(), currentUser.getId(), session);
+            }
         }
 
         return MailDto.builder()
